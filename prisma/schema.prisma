@@ -1,0 +1,200 @@
+// ==============================================================================
+// FreshPredict - Prisma Database Schema
+// Optimized for Multi-Tenant F&B Operations (PostgreSQL & SQLite compatible)
+// ==============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql" // Có thể chuyển sang "sqlite" khi test local: file:./dev.db
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------------------------------
+// ENUMS
+// ------------------------------------------------------------------------------
+
+enum UserPlan {
+  FREE // Dự báo 7 ngày, danh sách đi chợ cơ bản, theo dõi doanh thu
+  PRO  // Dự báo 30-90 ngày, bù trừ lễ hội/Tết, cảnh báo tồn kho tự động
+}
+
+enum ShopCategory {
+  HOT_FOOD           // Phở, bún, súp, cháo, lẩu (khách tăng khi trời lạnh)
+  COLD_DRINKS        // Cà phê, trà sữa, nước giải khát (khách tăng khi nắng nóng)
+  STREET_FOOD        // Quán ăn vỉa hè, ốc, xiên bẩn (nhạy cảm cao với mưa bão)
+  GENERAL_RESTAURANT // Quán cơm, nhà hàng tổng hợp
+}
+
+enum NotificationType {
+  LOW_STOCK     // Cảnh báo tồn kho dưới định mức dự báo
+  EXPIRED_SOON  // Cảnh báo nguyên liệu cận hạn sử dụng
+  WEATHER_ALERT // Cảnh báo thời tiết cực đoan (mưa to, dông bão)
+  PRO_TRIAL     // Thông báo tính năng gói Pro
+}
+
+// ------------------------------------------------------------------------------
+// 1. USER MODEL (Người dùng / Chủ quán)
+// ------------------------------------------------------------------------------
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  plan         UserPlan  @default(FREE)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Quan hệ 1-N: Một người dùng có thể sở hữu một hoặc nhiều quán ăn
+  shops        Shop[]
+
+  @@map("users")
+}
+
+// ------------------------------------------------------------------------------
+// 2. SHOP MODEL (Quán ăn / Điểm bán)
+// Đóng vai trò là trung tâm phân tách dữ liệu (Multi-tenant partition)
+// Mọi dữ liệu nguyên liệu, doanh thu, cảnh báo đều được cô lập theo shopId
+// ------------------------------------------------------------------------------
+model Shop {
+  id              String       @id @default(cuid())
+  userId          String
+  name            String
+  category        ShopCategory @default(HOT_FOOD)
+  address         String
+  city            String       @default("Hà Nội")
+  latitude        Float        @default(21.0285)  // Tọa độ định vị để gọi Open-Meteo
+  longitude       Float        @default(105.8542)
+  defaultBaseline Int          @default(120)       // Lượng khách TB mặc định nếu chưa đủ lịch sử
+  bufferFactor    Float        @default(0.10)      // Hệ số dự phòng an toàn (10% mặc định)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  // Quan hệ thuộc về User
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Các dữ liệu thuộc riêng về quán này
+  ingredients     Ingredient[]
+  revenues        RevenueEntry[]
+  notifications   Notification[]
+  customHolidays  HolidayEvent[]
+
+  @@index([userId])
+  @@index([latitude, longitude])
+  @@map("shops")
+}
+
+// ------------------------------------------------------------------------------
+// 3. INGREDIENT MODEL (Nguyên liệu tươi sống & Đồ khô)
+// ------------------------------------------------------------------------------
+model Ingredient {
+  id               String   @id @default(cuid())
+  shopId           String
+  name             String
+  unit             String   // kg, g, cái, lít, hộp, bó, bao...
+  unitPrice        Float    // Giá mua vào mỗi đơn vị (VNĐ)
+  shelfLifeDays    Int      // Hạn sử dụng bảo quản an toàn (số ngày)
+  currentStock     Float    // Số lượng tồn kho hiện tại
+  usagePerCustomer Float    // Định mức tiêu thụ trên 1 khách hàng
+  minStockAlert    Float?   // Mức cảnh báo tồn kho tối thiểu
+  category         String?  // Thịt tươi sống, Rau củ, Gia vị, Đồ khô...
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Thuộc về một quán cụ thể (Tách biệt dữ liệu)
+  shop             Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@index([shopId, name])
+  @@map("ingredients")
+}
+
+// ------------------------------------------------------------------------------
+// 4. REVENUE ENTRY MODEL (Doanh thu & Số lượng khách theo ngày)
+// Dữ liệu dùng để tính toán baseline và hệ số thứ trong tuần (T2-CN)
+// ------------------------------------------------------------------------------
+model RevenueEntry {
+  id             String   @id @default(cuid())
+  shopId         String
+  date           String   // Định dạng ngày chuẩn YYYY-MM-DD
+  revenue        Float    // Doanh thu trong ngày (VNĐ)
+  customerCount  Int      // Số lượng khách thực tế phục vụ
+  notes          String?  // Ghi chú ngày bán (ví dụ: mưa to, hết thịt sớm, tiệc sinh nhật...)
+  weatherSummary String?  // Tóm tắt thời tiết ngày đó (ví dụ: Nắng ráo 31°C)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Thuộc về một quán cụ thể
+  shop           Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  // Mỗi ngày mỗi quán chỉ có 1 bản ghi doanh thu duy nhất
+  @@unique([shopId, date])
+  @@index([shopId, date])
+  @@map("revenue_entries")
+}
+
+// ------------------------------------------------------------------------------
+// 5. HOLIDAY & EVENT MODEL (Ngày lễ Quốc gia & Sự kiện riêng của quán)
+// Cung cấp hệ số nhân lượng khách cho các dịp đặc biệt
+// ------------------------------------------------------------------------------
+model HolidayEvent {
+  id          String   @id @default(cuid())
+  shopId      String?  // null nếu là ngày lễ Quốc gia (áp dụng chung), có shopId nếu là sự kiện riêng
+  name        String   // Tên ngày lễ (Tết Nguyên Đán, Giỗ Tổ 10/3, 30/4 - 1/5, Khai trương...)
+  startDate   String   // Ngày bắt đầu YYYY-MM-DD
+  endDate     String   // Ngày kết thúc YYYY-MM-DD
+  multiplier  Float    @default(1.30) // Hệ số nhân khách (ví dụ 1.50 = tăng 50%)
+  description String?
+  isNational  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  // Thuộc về một quán cụ thể (nếu là sự kiện riêng)
+  shop        Shop?    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@index([startDate, endDate])
+  @@map("holiday_events")
+}
+
+// ------------------------------------------------------------------------------
+// 6. NOTIFICATION MODEL (Thông báo trong ứng dụng)
+// ------------------------------------------------------------------------------
+model Notification {
+  id        String           @id @default(cuid())
+  shopId    String
+  type      NotificationType
+  title     String
+  message   String
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  // Thuộc về một quán cụ thể
+  shop      Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, isRead])
+  @@map("notifications")
+}
+
+// ------------------------------------------------------------------------------
+// 7. WEATHER CACHE MODEL (Bộ nhớ đệm thời tiết Open-Meteo)
+// Giảm thiểu số lần gọi API bên ngoài, lưu trữ dự báo thời tiết 1 giờ
+// ------------------------------------------------------------------------------
+model WeatherCache {
+  id                      String   @id @default(cuid())
+  latitude                Float
+  longitude               Float
+  date                    String   // YYYY-MM-DD
+  temperatureMax          Float
+  temperatureMin          Float
+  precipitationProbability Int
+  precipitationSum        Float
+  weatherCode             Int
+  weatherDescription      String
+  cachedAt                DateTime @default(now())
+
+  @@unique([latitude, longitude, date])
+  @@index([latitude, longitude])
+  @@map("weather_cache")
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Remix FreshPredict",
+  "description": "Nền tảng dự báo lượng khách và gợi ý mua nguyên liệu thông minh cho quán ăn \u0026 quán cà phê dựa trên thời tiết và lịch sử bán hàng.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
